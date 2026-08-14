@@ -66,7 +66,15 @@ class Florolding:
         })
         easytier_node = easytier_pyo3.Node(easytier_config)
         easytier_node.start()
-        server = AsyncFloroldingServer(machine_id, easytier_node.peer_id(), player_name, server_port=server_port, minecraft_port=minecraft_port, vendor=self.vendor)
+        server = AsyncFloroldingServer(
+            machine_id=machine_id,
+            easytier_id=easytier_node.peer_id(),
+            player_name=player_name,
+            server_port=server_port,
+            minecraft_port=minecraft_port,
+            vendor=self.vendor,
+            log_callback=self.log_callback
+        )
         Thread(target=asyncio.run, args=(server.start(),), daemon=True).start()
         return room_code, server, easytier_node
 
