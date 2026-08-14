@@ -4,11 +4,28 @@ import json
 
 
 class AsyncFloroldingClient:
-    def __init__(self, machine_id: str, easytier_id: str, player_name: str = "", server_host: str = "127.0.0.1", server_port: int = 3939):
-        self.player_name = player_name if player_name !=0 and not player_name.isspace() else f"Player_{machine_id}"
+    def __init__(
+        self,
+        machine_id: str,
+        easytier_id: str | int,
+        player_name: str,
+        server_host: str = "127.0.0.1",
+        server_port: int = 3939,
+        vendor: str = "Florolding"
+    ):
+        """
+        实例化一个异步联机客户端
+        :param machine_id: 机器码(其实是什么无所谓, 别和别人的重复就行:)
+        :param easytier_id: EasyTier
+        :param player_name: 玩家昵称
+        :param server_host: 联机大厅服务端 IP
+        :param server_port: 联机大厅服务端端口
+        :param vendor: 客户端信息
+        """
+        self.player_name = player_name
         self.machine_id = machine_id
         self.easytier_id = easytier_id
-        self.vendor = "Florolding"
+        self.vendor = vendor
         self.server_host = server_host
         self.server_port = server_port
         self.reader = None

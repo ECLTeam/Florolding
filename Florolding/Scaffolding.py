@@ -1,6 +1,6 @@
+import hashlib
 import random
 import uuid
-import hashlib
 
 
 def generate_code() -> str:
