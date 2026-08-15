@@ -1,5 +1,6 @@
 from re import match as re_match
 from typing import Callable
+from copy import deepcopy
 import asyncio
 import struct
 import json
@@ -15,17 +16,18 @@ class AsyncFloroldingServer:
         server_port: int = 3939,
         minecraft_port: int = 25565,
         vendor: str = "Florolding",
-        log_callback: Callable[[str, str], None] = print
+        log_callback: Callable[[str, str], None] = lambda l, m: print(f"[{l}] {m}")
     ):
         """
-        实例化一个异步联机客户端
+        实例化一个异步联机服务端
         :param machine_id: 机器码(其实是什么无所谓, 别和别人的重复就行:)
-        :param easytier_id: EasyTier
+        :param easytier_id: 自己的 EasyTier peer ID
         :param player_name: 玩家昵称
         :param server_host: 联机大厅服务端 IP
         :param server_port: 联机大厅服务端端口
         :param minecraft_port: Minecraft 端口
         :param vendor: 客户端信息
+        :param log_callback: 日志回调, 接受一个这样的函数 (level: str, message: str) -> None
         """
         player_name = player_name
         self.server_host = server_host
@@ -49,11 +51,11 @@ class AsyncFloroldingServer:
 
         # 协议处理器映射
         self.protocol_handlers = {
-            "c:ping": self.__c_ping,
-            "c:protocols": self.__c_protocols,
-            "c:server_port": self.__c_server_port,
-            "c:player_ping": self.__c_player_ping,
-            "c:player_profiles_list": self.__c_player_profiles_list
+            "c:ping": self._c_ping,
+            "c:protocols": self._c_protocols,
+            "c:server_port": self._c_server_port,
+            "c:player_ping": self._c_player_ping,
+            "c:player_profiles_list": self._c_player_profiles_list
         }
 
         # 支持的协议列表
@@ -62,16 +64,19 @@ class AsyncFloroldingServer:
             "c:player_easytier_id"
         ])
 
-        self._loop = None
+        self.loop = None
 
     def set_minecraft_port(self, minecraft_port: int | str):
+        """
+        设置 Minecraft 端口, 一般不建议修改, 因为市面上的 Scaffolding 实现基本上仅在加入时获取这个端口
+        """
         self.minecraft_port = minecraft_port
 
     @staticmethod
-    async def __c_ping(request_body: bytes) -> tuple:
+    async def _c_ping(request_body: bytes) -> tuple:
         return 0, request_body  # 返回相同的请求体
 
-    async def __c_protocols(self, request_body: bytes) -> tuple:
+    async def _c_protocols(self, _) -> tuple:
         try:
             """
             # 客户端支持的协议列表 (由\0分割)
@@ -85,10 +90,10 @@ class AsyncFloroldingServer:
         except UnicodeDecodeError:
             return 255, b"Invalid protocol format"
 
-    async def __c_server_port(self, request_body: bytes) -> tuple:
+    async def _c_server_port(self, _) -> tuple:
         return 0, struct.pack(">H", self.minecraft_port)
 
-    async def __c_player_ping(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
+    async def _c_player_ping(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
         try:
             # 解析JSON请求体
             player_data = json.loads(request_body.decode("utf-8"))
@@ -105,7 +110,7 @@ class AsyncFloroldingServer:
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return 255, f"Invalid JSON format: {e}".encode("utf-8")
 
-    async def __c_player_profiles_list(self, request_body: bytes) -> tuple:
+    async def _c_player_profiles_list(self, _) -> tuple:
         try:
             # 构建玩家列表
             async with self.lock:
@@ -114,16 +119,23 @@ class AsyncFloroldingServer:
         except Exception as e:
             return 255, f"Error generating player list: {e}".encode("utf-8")
 
-    async def c_player_profiles_list(self) -> list:
+    async def c_player_profiles_list(self) -> list[dict[str, str | int]]:
+        """获取玩家列表(异步)"""
         try:
             # 构建玩家列表
             async with self.lock:
-                return list(self.players.values())
+                return list(deepcopy(self.players).values())
         except Exception:
             return []
 
+    def sync_get_player_list(self) -> list[dict[str, str | int]]:
+        """获取玩家列表(同步)"""
+        if self.loop:
+            return asyncio.run_coroutine_threadsafe(self.c_player_profiles_list(), self.loop).result()
+        return []
+
     @staticmethod
-    def __parse_request(data: bytes) -> tuple:
+    def _parse_request(data: bytes) -> tuple:
         """解析TCP请求"""
         if len(data) < 5:  # 最小长度检查
             return None, None, 255
@@ -150,7 +162,7 @@ class AsyncFloroldingServer:
             return None, None, 255
 
     @staticmethod
-    def __create_response(status: int, response_body: bytes = b"") -> bytes:
+    def _create_response(status: int, response_body: bytes = b"") -> bytes:
         """构建请求体"""
         body_length = len(response_body)
         # 构建响应: [状态(1字节)][响应体长度(4字节)][响应体]
@@ -159,7 +171,7 @@ class AsyncFloroldingServer:
         response += response_body  # 响应体
         return response
 
-    async def __remove_player(self, writer: asyncio.StreamWriter):
+    async def _remove_player(self, writer: asyncio.StreamWriter):
         """移除玩家"""
         async with self.lock:
             if writer in self.machine_ids:
@@ -167,32 +179,32 @@ class AsyncFloroldingServer:
                 if machine_id in self.players:
                     self.players.pop(machine_id)
 
-    async def __handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         address = writer.get_extra_info("peername")
         self.log_callback("INFO", f"新的连接: {address}")
         try:
             while True:
                 data = await reader.read(4096)
                 if not data: break
-                protocol_type, request_body, parse_status = self.__parse_request(data)
+                protocol_type, request_body, parse_status = self._parse_request(data)
                 if parse_status != 0:
                     # 解析错误
                     error_msg = f"Parse error: {parse_status}".encode("utf-8")
-                    writer.write(self.__create_response(255, error_msg))
+                    writer.write(self._create_response(255, error_msg))
                     await writer.drain()
                     continue
                 self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
                 if protocol_type in self.protocol_handlers:
                     if protocol_type == "c:player_ping":
                         # 特殊处理玩家心跳，需要传入writer
-                        status, response_body = await self.__c_player_ping(request_body, writer)
+                        status, response_body = await self._c_player_ping(request_body, writer)
                     else:
                         status, response_body = await self.protocol_handlers[protocol_type](request_body)
-                    response = self.__create_response(status, response_body)
+                    response = self._create_response(status, response_body)
                 else:
                     # 不支持的协议
                     error_msg = f"Unsupported protocol: {protocol_type}".encode("utf-8")
-                    response = self.__create_response(255, error_msg)
+                    response = self._create_response(255, error_msg)
                 # 发送响应
                 self.log_callback("DEBUG", f"响应长度: {len(response)}")
                 writer.write(response)
@@ -204,20 +216,20 @@ class AsyncFloroldingServer:
             self.log_callback("ERROR", f"异常: {e}")
         finally:
             # 客户端断开连接，立即移除相关玩家
-            await self.__remove_player(writer)
+            await self._remove_player(writer)
             writer.close()
             await writer.wait_closed()
             self.log_callback("INFO", f"连接关闭: {address}")
 
     async def start(self):
         """启动Florolding TCP服务器, 基于Scaffolding协议"""
-        self._loop = asyncio.get_running_loop()
-
         self.server = await asyncio.start_server(
-            self.__handle_client,
+            self._handle_client,
             self.server_host,
             self.server_port
         )
+
+        self.loop = asyncio.get_running_loop()
 
         self.log_callback("INFO", f"FloroldingServer 启动在 {self.server_host}:{self.server_port}")
         self.log_callback("INFO", f"支持的协议: {', '.join(self.supported_protocols)}")
@@ -237,8 +249,12 @@ class AsyncFloroldingServer:
         self.log_callback("INFO", "FloroldingServer 已停止")
 
     def sync_stop(self) -> bool:
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(self.stop(), self._loop)
+        """
+        同步线程安全的停止服务端
+        :return: 成功停止返回 True
+        """
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(self.stop(), self.loop)
             return True
         return False
 

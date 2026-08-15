@@ -1,3 +1,4 @@
+from typing import Callable
 import asyncio
 import struct
 import json
@@ -11,7 +12,8 @@ class AsyncFloroldingClient:
         player_name: str,
         server_host: str = "127.0.0.1",
         server_port: int = 3939,
-        vendor: str = "Florolding"
+        vendor: str = "Florolding",
+        log_callback: Callable[[str, str], None] = lambda l, m: print(f"[{l}] {m}")
     ):
         """
         实例化一个异步联机客户端
@@ -21,6 +23,7 @@ class AsyncFloroldingClient:
         :param server_host: 联机大厅服务端 IP
         :param server_port: 联机大厅服务端端口
         :param vendor: 客户端信息
+        :param log_callback: 日志回调, 接受一个这样的函数 (level: str, message: str) -> None
         """
         self.player_name = player_name
         self.machine_id = machine_id
@@ -28,6 +31,7 @@ class AsyncFloroldingClient:
         self.vendor = vendor
         self.server_host = server_host
         self.server_port = server_port
+        self.log_callback = log_callback
         self.reader = None
         self.writer = None
 
@@ -44,15 +48,19 @@ class AsyncFloroldingClient:
         self.heartbeat_task = None
         self.error_num = 0
 
-    async def c_ping(self, data: bytes = b"Hello!"):
+        self.loop = None
+
+    async def c_ping(self, data: bytes = b"ping") -> bool:
         status, response_body = await self.send_request("c:ping", data)
         print(f"状态: {status}")
         print(f"请求数据: {data}")
         print(f"响应数据: {response_body}")
         if status == 0 and response_body == data:
-            print("✓ Ping请求成功")
-        else:
-            print("✗ Ping请求失败")
+            return True
+        return False
+
+    def sync_c_ping(self, data: bytes = b"ping") -> bool:
+        return asyncio.run_coroutine_threadsafe(self.c_ping(data), self.loop).result()
 
     async def c_protocols(self):
         request_body = "\0".join(self.supported_protocols).encode("ascii")
@@ -68,6 +76,12 @@ class AsyncFloroldingClient:
             print(f"错误: {response_body.decode('utf-8')}")
             print("✗ 协议协商失败")
 
+    def sync_c_protocols(self):
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(self.c_protocols(), self.loop).result()
+            return 111
+        return None
+
     async def c_server_port(self):
         status, response_body = await self.send_request("c:server_port", b"")
         print(f"状态: {status}")
@@ -76,6 +90,7 @@ class AsyncFloroldingClient:
                 port = struct.unpack(">H", response_body)[0]
                 print(f"Minecraft服务器端口: {port}")
                 print("✓ 服务器端口请求成功")
+                return int(port)
             except struct.error as e:
                 self.error_num += 1
                 print("请求体长度:", len(response_body), "异常:", e)
@@ -84,6 +99,10 @@ class AsyncFloroldingClient:
         else:
             print(f"错误: {response_body.decode('utf-8')}")
             print("✗ 服务器端口请求失败")
+
+    def sync_server_port(self):
+        if self.loop:
+            return asyncio.run_coroutine_threadsafe(self.c_server_port(), self.loop).result()
 
     async def c_player_profiles_list(self):
         status, response_body = await self.send_request("c:player_profiles_list", b"")
@@ -118,13 +137,13 @@ class AsyncFloroldingClient:
                     await asyncio.sleep(interval)
                 except Exception as e:
                     print(f"[{self.player_name}] 心跳发送失败: {e}")
-                    break
+                    #break
 
         self.heartbeat_task = asyncio.create_task(heartbeat_loop())
         print(f"[{self.player_name}] 开始定时心跳，间隔: {interval}秒")
 
     @staticmethod
-    def __create_request(protocol_type: str, request_body: bytes = b'') -> bytes:
+    def _create_request(protocol_type: str, request_body: bytes = b'') -> bytes:
         """创建TCP请求"""
         # 编码协议类型
         protocol_bytes = protocol_type.encode("ascii")
@@ -136,7 +155,7 @@ class AsyncFloroldingClient:
         return request
 
     @staticmethod
-    def __parse_response(data: bytes) -> tuple:
+    def _parse_response(data: bytes) -> tuple:
         """解析TCP响应"""
         print("包长度:", len(data))
         if len(data) < 5:
@@ -153,6 +172,7 @@ class AsyncFloroldingClient:
         self.reader, self.writer = await asyncio.open_connection(
             self.server_host, self.server_port
         )
+        self.loop = asyncio.get_running_loop()
         print(f"已连接到服务器 {self.server_host}:{self.server_port}")
         await self.start_heartbeat()
 
@@ -164,17 +184,35 @@ class AsyncFloroldingClient:
             self.writer = None
             print("已断开与服务器的连接")
 
+    async def _serve_forever(self):
+        """
+        保活: 保持事件循环运行直到连接关闭
+        防止 asyncio.run 在 connect 返回后取消心跳任务并销毁事件循环
+        """
+        while self.writer and not self.writer.is_closing():
+            await asyncio.sleep(1)
+
+    def start(self):
+        """
+        线程入口: 连接服务器并保活事件循环
+        用法: Thread(target=client.start, daemon=True).start()
+        """
+        async def _run():
+            await self.connect()
+            await self._serve_forever()
+        asyncio.run(_run())
+
     async def send_request(self, protocol_type: str, request_body: bytes = b"") -> tuple:
         """发送请求并接收响应"""
         if not self.writer:
             raise RuntimeError("未连接到服务器")
         # 创建并发送请求
-        self.writer.write(self.__create_request(protocol_type, request_body))
+        self.writer.write(self._create_request(protocol_type, request_body))
         await self.writer.drain()
         # 接收响应
         response = await self.reader.read(4096)
         # 正常解析响应
-        return self.__parse_response(response)
+        return self._parse_response(response)
 
     async def __aenter__(self):
         """进入异步上下文连接服务器"""
