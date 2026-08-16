@@ -54,7 +54,7 @@ class Florolding:
         创建一个房间(注意一定要管理好 EasyTier 节点的生命周期!!!!!)
         :param player_name: 玩家昵称
         :param minecraft_port: Minecraft 端口
-        :return: (房间码, 服务端实例, EasyTierPyo3Node)
+        :return: (房间码, 服务端实例, EasyTierPyo3 Node)
         """
         room_code = Scaffolding.generate_code()
         machine_id = Scaffolding.machine_id()
@@ -95,6 +95,13 @@ class Florolding:
         player_name: str,
         conn_timeout: int = 30
     ) -> tuple[AsyncFloroldingClient, easytier_pyo3.Node]:
+        """
+        加入一个房间(注意一定要管理好 EasyTier 节点的生命周期!!!!!)
+        :param room_code: 房间码
+        :param player_name: 玩家昵称
+        :param conn_timeout: 连接超时时间(单位: 秒)
+        :return: (客户端实例, EasyTierPyo3 Node)
+        """
         if not Scaffolding.validate_code(room_code):
             raise ValueError("房间码不合规")
 
@@ -152,6 +159,12 @@ class Florolding:
         easytier_node: easytier_pyo3.Node,
         conn_timeout: int = 30
     ):
+        """
+        获取房主的 EasyTier 节点信息
+        :param easytier_node: EasyTierPyo3 Node
+        :param conn_timeout: 连接超时时间(单位: 秒)
+        :return: EasyTier 节点信息
+        """
         host_node_info = {}
         start_time = time.time()
         while True:
@@ -176,6 +189,13 @@ class Florolding:
         bind_mc_port: int = 25565,
         timeout: int = 30
     ) -> bool:
+        """
+        绑定房主在虚拟 IP 上的 Minecraft 端口至本地
+        :param client: Florolding Client
+        :param easytier_node: EasyTierPyo3 Node
+        :param bind_mc_port: 绑定的本地端口
+        :param timeout: 超时时间(单位: 秒)
+        """
         mc_port = client.sync_c_server_port()
         if not mc_port:
             return False
