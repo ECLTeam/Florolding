@@ -18,7 +18,7 @@ class AsyncFloroldingClient:
         """
         实例化一个异步联机客户端
         :param machine_id: 机器码(其实是什么无所谓, 别和别人的重复就行:)
-        :param easytier_id: EasyTier
+        :param easytier_id: 自己的 EasyTier peer ID
         :param player_name: 玩家昵称
         :param server_host: 联机大厅服务端 IP
         :param server_port: 联机大厅服务端端口
@@ -35,6 +35,13 @@ class AsyncFloroldingClient:
         self.reader = None
         self.writer = None
 
+        self.player_data = {
+            "name": self.player_name,
+            "machine_id": self.machine_id,
+            "easytier_id": self.easytier_id,
+            "vendor": self.vendor
+        }
+
         # 支持的协议列表
         self.supported_protocols = [
             "c:ping",
@@ -45,106 +52,141 @@ class AsyncFloroldingClient:
             "c:player_profiles_list"
         ]
 
+        self.heartbeat_body = json.dumps(self.player_data).encode("utf-8")
+
         self.heartbeat_task = None
-        self.error_num = 0
 
         self.loop = None
 
     async def c_ping(self, data: bytes = b"ping") -> bool:
+        """
+        c:ping
+        :param data: Data
+        :return: bool
+        """
         status, response_body = await self.send_request("c:ping", data)
-        print(f"状态: {status}")
-        print(f"请求数据: {data}")
-        print(f"响应数据: {response_body}")
+        self.log_callback("INFO", f"[c:ping] 状态: {status}; 请求数据: {data}; 响应数据: {response_body}")
         if status == 0 and response_body == data:
             return True
         return False
 
     def sync_c_ping(self, data: bytes = b"ping") -> bool:
-        return asyncio.run_coroutine_threadsafe(self.c_ping(data), self.loop).result()
+        """
+        c:ping
+        :param data: Data
+        :return: bool
+        """
+        if self.loop:
+            return asyncio.run_coroutine_threadsafe(self.c_ping(data), self.loop).result()
+        return False
 
-    async def c_protocols(self):
+    async def c_protocols(self) -> list[str] | None:
+        """
+        c:protocols - 与服务端交换协议信息
+        :return: 服务端支持的协议
+        """
         request_body = "\0".join(self.supported_protocols).encode("ascii")
         status, response_body = await self.send_request("c:protocols", request_body)
-        print(f"状态: {status}")
-        print(f"客户端协议: {self.supported_protocols}")
+        self.log_callback("INFO", f"[c:protocols] 状态: {status}")
+        self.log_callback("DEBUG", f"[c:protocols] 客户端协议: {self.supported_protocols}")
         if status == 0:
             server_protocols = response_body.decode("ascii").split("\0")
-            print(f"服务器协议: {server_protocols}")
-            print(f"共同协议: {set(self.supported_protocols) & set(server_protocols)}")
-            print("✓ 协议协商成功")
+            self.log_callback("DEBUG", f"[c:protocols] 服务器协议: {server_protocols}")
+            self.log_callback("DEBUG", f"[c:protocols] 共同协议: {set(self.supported_protocols) & set(server_protocols)}")
+            self.log_callback("INFO", "[c:protocols] 协议协商成功")
+            return server_protocols
         else:
-            print(f"错误: {response_body.decode('utf-8')}")
-            print("✗ 协议协商失败")
+            self.log_callback("ERROR", f"[c:protocols] 错误: {response_body.decode('utf-8')}")
+            self.log_callback("INFO", "[c:protocols] 协议协商失败")
+            return None
 
-    def sync_c_protocols(self):
+    def sync_c_protocols(self) -> list[str] | None:
+        """
+        c:protocols - 与服务端交换协议信息
+        :return: 服务端支持的协议
+        """
         if self.loop:
-            asyncio.run_coroutine_threadsafe(self.c_protocols(), self.loop).result()
-            return 111
+            return asyncio.run_coroutine_threadsafe(self.c_protocols(), self.loop).result()
         return None
 
-    async def c_server_port(self):
+    async def c_server_port(self) -> int | None:
+        """
+        c:server_port - 获取 Minecraft 端口
+        :return: 成功返回 Minecraft 端口, 失败返回 None
+        """
         status, response_body = await self.send_request("c:server_port", b"")
-        print(f"状态: {status}")
+        self.log_callback("INFO", f"[c:server_port] 状态: {status}")
         if status == 0:
             try:
                 port = struct.unpack(">H", response_body)[0]
-                print(f"Minecraft服务器端口: {port}")
-                print("✓ 服务器端口请求成功")
+                self.log_callback("DEBUG", f"[c:server_port] Minecraft 服务器端口(虚拟 IP): {port}")
+                self.log_callback("INFO", "[c:server_port] 服务器端口请求成功")
                 return int(port)
             except struct.error as e:
-                self.error_num += 1
-                print("请求体长度:", len(response_body), "异常:", e)
+                self.log_callback("ERROR", f"[c:server_port] 请求体长度: {len(response_body)}; 异常: {e}")
         elif status == 32:
-            print("服务器未启动")
+            self.log_callback("INFO", "[c:server_port] 服务器未启动")
+            return None
         else:
-            print(f"错误: {response_body.decode('utf-8')}")
-            print("✗ 服务器端口请求失败")
+            self.log_callback("ERROR", f"[c:server_port] 错误: {response_body.decode('utf-8')}")
+            self.log_callback("INFO", "[c:server_port] 服务器端口请求失败")
+            return None
 
-    def sync_server_port(self):
+    def sync_c_server_port(self) -> int | None:
+        """
+        c:server_port - 获取 Minecraft 端口
+        :return: 成功返回 Minecraft 端口, 失败返回 None
+        """
         if self.loop:
             return asyncio.run_coroutine_threadsafe(self.c_server_port(), self.loop).result()
+        return None
 
-    async def c_player_profiles_list(self):
+    async def c_player_profiles_list(self) -> list[dict] | None:
+        """
+        c:player_profiles_list - 获取成员列表
+        :return: 成功返回 成员列表, 失败返回 None
+        """
         status, response_body = await self.send_request("c:player_profiles_list", b"")
-        print(f"状态: {status}")
+        self.log_callback("INFO", f"[c:player_profiles_list] 状态: {status}")
         if status == 0:
             try:
                 players = json.loads(response_body.decode("utf-8"))
-                print(f"在线玩家 ({len(players)}人):")
-                for player in players:
-                    print(player)
-                print("✓ 玩家列表请求成功")
+                self.log_callback("INFO", f"[c:player_profiles_list] 在线玩家 {len(players)} 人")
+                return players
             except json.decoder.JSONDecodeError:
-                print("Json解析出错, 源数据:", response_body)
+                self.log_callback("ERROR", f"[c:player_profiles_list] Json 解析出错, 源数据: {response_body}")
         else:
-            print(f"错误: {response_body.decode('utf-8')}")
-            print("✗ 玩家列表请求失败")
+            self.log_callback("ERROR", f"[c:player_profiles_list] 错误: {response_body.decode('utf-8')}")
+            self.log_callback("INFO", "[c:player_profiles_list] 玩家列表请求失败")
+            return None
+
+    def sync_c_player_list(self) -> list[dict] | None:
+        """
+        c:player_profiles_list - 获取成员列表
+        :return: 成功返回 成员列表, 失败返回 None
+        """
+        if self.loop:
+            return asyncio.run_coroutine_threadsafe(self.c_player_profiles_list(), self.loop).result()
+        return None
 
     async def start_heartbeat(self, interval: int = 5):
         """定时发送心跳"""
         async def heartbeat_loop():
             while True:
                 try:
-                    player_data = {
-                        "name": self.player_name,
-                        "machine_id": self.machine_id,
-                        "easytier_id": self.easytier_id,
-                        "vendor": self.vendor
-                    }
-                    request_body = json.dumps(player_data).encode("utf-8")
-                    await self.send_request("c:player_ping", request_body)
-                    print(f"[{self.player_name}] 心跳发送成功")
+                    await self.send_request("c:player_ping", self.heartbeat_body)
+                    # self.log_callback("DEBUG", f"[c:player_ping] 心跳发送成功")
                     await asyncio.sleep(interval)
                 except Exception as e:
-                    print(f"[{self.player_name}] 心跳发送失败: {e}")
-                    #break
+                    self.log_callback("ERROR", f"[c:player_ping] 心跳发送失败: {e}")
+                    break
 
         self.heartbeat_task = asyncio.create_task(heartbeat_loop())
-        print(f"[{self.player_name}] 开始定时心跳，间隔: {interval}秒")
+        self.log_callback("INFO", f"[c:player_ping] 开始定时心跳, 间隔: {interval}s")
 
     @staticmethod
     def _create_request(protocol_type: str, request_body: bytes = b'') -> bytes:
-        """创建TCP请求"""
+        """创建 TCP 请求"""
         # 编码协议类型
         protocol_bytes = protocol_type.encode("ascii")
         # 构建请求: [类型长度(1字节)][类型][请求体长度(4字节)][请求体]
@@ -156,8 +198,7 @@ class AsyncFloroldingClient:
 
     @staticmethod
     def _parse_response(data: bytes) -> tuple:
-        """解析TCP响应"""
-        print("包长度:", len(data))
+        """解析 TCP 响应"""
         if len(data) < 5:
             raise ValueError("响应数据太短")
         status = struct.unpack(">B", data[0:1])[0]
@@ -167,22 +208,35 @@ class AsyncFloroldingClient:
         response_body = data[5:5 + body_length]
         return status, response_body
 
+    async def send_request(self, protocol_type: str, request_body: bytes = b"") -> tuple:
+        """发送请求并接收响应"""
+        if not self.writer:
+            raise RuntimeError("未连接到服务器")
+        # 创建并发送请求
+        self.writer.write(self._create_request(protocol_type, request_body))
+        await self.writer.drain()
+        # 接收响应
+        response = await self.reader.read(4096)
+        # 正常解析响应
+        return self._parse_response(response)
+
     async def connect(self):
-        """连接到基于Scaffolding协议的服务器"""
+        """连接到基于 Scaffolding 协议的服务器"""
         self.reader, self.writer = await asyncio.open_connection(
             self.server_host, self.server_port
         )
         self.loop = asyncio.get_running_loop()
-        print(f"已连接到服务器 {self.server_host}:{self.server_port}")
+        self.log_callback("INFO", f"已连接到服务器 {self.server_host}:{self.server_port}")
         await self.start_heartbeat()
 
     async def disconnect(self):
+        """断开连接"""
         if self.writer:
             self.writer.close()
             await self.writer.wait_closed()
             self.reader = None
             self.writer = None
-            print("已断开与服务器的连接")
+            self.log_callback("INFO", "已断开与服务器的连接")
 
     async def _serve_forever(self):
         """
@@ -201,18 +255,6 @@ class AsyncFloroldingClient:
             await self.connect()
             await self._serve_forever()
         asyncio.run(_run())
-
-    async def send_request(self, protocol_type: str, request_body: bytes = b"") -> tuple:
-        """发送请求并接收响应"""
-        if not self.writer:
-            raise RuntimeError("未连接到服务器")
-        # 创建并发送请求
-        self.writer.write(self._create_request(protocol_type, request_body))
-        await self.writer.drain()
-        # 接收响应
-        response = await self.reader.read(4096)
-        # 正常解析响应
-        return self._parse_response(response)
 
     async def __aenter__(self):
         """进入异步上下文连接服务器"""

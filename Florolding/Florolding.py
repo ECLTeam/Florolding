@@ -51,9 +51,10 @@ class Florolding:
         minecraft_port: int = 25565
     ) -> tuple[str, AsyncFloroldingServer, easytier_pyo3.Node]:
         """
+        创建一个房间(注意一定要管理好 EasyTier 节点的生命周期!!!!!)
         :param player_name: 玩家昵称
         :param minecraft_port: Minecraft 端口
-        :return: (房间号, 服务端实例, EasyTierPyo3Node)
+        :return: (房间码, 服务端实例, EasyTierPyo3Node)
         """
         room_code = Scaffolding.generate_code()
         machine_id = Scaffolding.machine_id()
@@ -93,9 +94,9 @@ class Florolding:
         room_code: str,
         player_name: str,
         conn_timeout: int = 30
-    ):
+    ) -> tuple[AsyncFloroldingClient, easytier_pyo3.Node]:
         if not Scaffolding.validate_code(room_code):
-            raise ValueError("房间号不合规")
+            raise ValueError("房间码不合规")
 
         machine_id = Scaffolding.machine_id()
         easytier_config: dict = deepcopy(self.easytier_config)
@@ -110,23 +111,11 @@ class Florolding:
         easytier_node = easytier_pyo3.Node(easytier_config)
         easytier_node.start()
 
-        host_node_info = {}
-        start_time = time.time()
-        while True:
-            for node_info in easytier_node.routes():
-                if node_info["hostname"].lower().startswith("scaffolding-mc-server-") and (
-                    node_info.get("ipv4_addr", {}).get("address", {}).get("addr")
-                ):
-                    host_node_info = node_info
-                    break
-            if host_node_info:
-                break
-            time.sleep(1)
-            if time.time() - start_time > conn_timeout:
-                raise TimeoutError("连接超时, 无法找到联机大厅")
+        host_node_info = self.get_host_node_info(easytier_node, conn_timeout)
 
         server_port = host_node_info["hostname"].replace("scaffolding-mc-server-", "")
         if not server_port.isnumeric() or not (0 < int(server_port) <= 65535):
+            easytier_node.stop()
             raise ValueError("联机大厅端口不合规")
 
         host_virtual_ip = IPv4Address(host_node_info['ipv4_addr']['address']['addr']).exploded
@@ -153,10 +142,46 @@ class Florolding:
         while not client.writer:
             time.sleep(1)
 
+        # 马上协商协议, 防止某些 Scaffolding 实现会炸
         client.sync_c_protocols()
 
-        mc_port = client.sync_server_port()
-        bind_mc_port = find_free_port()
+        return client, easytier_node
+
+    @staticmethod
+    def get_host_node_info(
+        easytier_node: easytier_pyo3.Node,
+        conn_timeout: int = 30
+    ):
+        host_node_info = {}
+        start_time = time.time()
+        while True:
+            for node_info in easytier_node.routes():
+                if node_info["hostname"].lower().startswith("scaffolding-mc-server-") and (
+                        node_info.get("ipv4_addr", {}).get("address", {}).get("addr")
+                ):
+                    host_node_info = node_info
+                    break
+            if host_node_info:
+                break
+            time.sleep(1)
+            if time.time() - start_time > conn_timeout:
+                easytier_node.stop()
+                raise TimeoutError("连接超时, 无法找到联机大厅")
+        return host_node_info
+
+    def bind_mc_port(
+        self,
+        client: AsyncFloroldingClient,
+        easytier_node: easytier_pyo3.Node,
+        bind_mc_port: int = 25565,
+        timeout: int = 30
+    ) -> bool:
+        mc_port = client.sync_c_server_port()
+        if not mc_port:
+            return False
+
+        host_node_info = self.get_host_node_info(easytier_node, timeout)
+        host_virtual_ip = IPv4Address(host_node_info['ipv4_addr']['address']['addr']).exploded
         easytier_node.apply_config({
             "port_forward": [
                 {
@@ -167,7 +192,7 @@ class Florolding:
             ]
         })
 
-        return easytier_node
+        return True
 
 
 def find_free_port() -> int:

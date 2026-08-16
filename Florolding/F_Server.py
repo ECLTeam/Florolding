@@ -46,6 +46,7 @@ class AsyncFloroldingServer:
             }
         }  # {machine_id: player_info}
         self.machine_ids = {}  # {writer: machine_id}
+        self.client_protocols = {}  # {machine_id: protocols}
 
         self.lock = asyncio.Lock()  # 异步锁
 
@@ -73,22 +74,32 @@ class AsyncFloroldingServer:
         self.minecraft_port = minecraft_port
 
     @staticmethod
-    async def _c_ping(request_body: bytes) -> tuple:
+    async def _c_ping(request_body: bytes, _) -> tuple:
         return 0, request_body  # 返回相同的请求体
 
-    async def _c_protocols(self, _) -> tuple:
+    async def _c_protocols(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
         try:
-            """
-            # 客户端支持的协议列表 (由\0分割)
-            # 取交集，确定共同支持的协议
-            common_protocols = list(set(request_body.decode("ascii").split("\0")) & set(self.supported_protocols))
-            # 构建响应体
-            response_body = "\0".join(common_protocols).encode("ascii")
-            return 0, response_body
-            """
+            if writer not in self.machine_ids:
+                machine_id = self.machine_ids[writer]
+                if machine_id not in self.players:
+                    self.client_protocols.update({machine_id: list(request_body.decode("ascii").split("\0"))})
             return 0, "\0".join(self.supported_protocols).encode("ascii")
         except UnicodeDecodeError:
             return 255, b"Invalid protocol format"
+
+    async def get_client_protocols(self) -> dict:
+        """获取客户端协议(异步)"""
+        try:
+            async with self.lock:
+                return deepcopy(self.client_protocols)
+        except Exception:
+            return {}
+
+    def sync_get_client_protocols(self) -> dict:
+        """获取客户端协议(同步)"""
+        if self.loop:
+            return asyncio.run_coroutine_threadsafe(self.get_client_protocols(), self.loop).result()
+        return {}
 
     async def _c_server_port(self, _) -> tuple:
         return 0, struct.pack(">H", self.minecraft_port)
@@ -119,7 +130,7 @@ class AsyncFloroldingServer:
         except Exception as e:
             return 255, f"Error generating player list: {e}".encode("utf-8")
 
-    async def c_player_profiles_list(self) -> list[dict[str, str | int]]:
+    async def get_player_list(self) -> list[dict[str, str | int]]:
         """获取玩家列表(异步)"""
         try:
             # 构建玩家列表
@@ -131,7 +142,7 @@ class AsyncFloroldingServer:
     def sync_get_player_list(self) -> list[dict[str, str | int]]:
         """获取玩家列表(同步)"""
         if self.loop:
-            return asyncio.run_coroutine_threadsafe(self.c_player_profiles_list(), self.loop).result()
+            return asyncio.run_coroutine_threadsafe(self.get_player_list(), self.loop).result()
         return []
 
     @staticmethod
@@ -195,11 +206,7 @@ class AsyncFloroldingServer:
                     continue
                 self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
                 if protocol_type in self.protocol_handlers:
-                    if protocol_type == "c:player_ping":
-                        # 特殊处理玩家心跳，需要传入writer
-                        status, response_body = await self._c_player_ping(request_body, writer)
-                    else:
-                        status, response_body = await self.protocol_handlers[protocol_type](request_body)
+                    status, response_body = await self.protocol_handlers[protocol_type](request_body, writer)
                     response = self._create_response(status, response_body)
                 else:
                     # 不支持的协议
