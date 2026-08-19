@@ -101,7 +101,7 @@ class AsyncFloroldingServer:
             return asyncio.run_coroutine_threadsafe(self.get_client_protocols(), self.loop).result()
         return {}
 
-    async def _c_server_port(self, _) -> tuple:
+    async def _c_server_port(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
         return 0, struct.pack(">H", self.minecraft_port)
 
     async def _c_player_ping(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
