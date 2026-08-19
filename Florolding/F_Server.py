@@ -59,13 +59,22 @@ class AsyncFloroldingServer:
             "c:player_profiles_list": self._c_player_profiles_list
         }
 
-        # 支持的协议列表
-        self.supported_protocols = list(self.protocol_handlers.keys())
-        self.supported_protocols.extend([
+        # 其他支持的协议列表
+        self.other_protocols = [
             "c:player_easytier_id"
-        ])
+        ]
+
+        self._not_output_log_protocols = [
+            "c:player_ping",
+            "c:player_profiles_list"
+        ]
 
         self.loop = None
+
+    def _supported_protocols(self) -> list[str]:
+        supported_protocols = list(self.protocol_handlers.keys())
+        supported_protocols.extend(self.other_protocols)
+        return supported_protocols
 
     def set_minecraft_port(self, minecraft_port: int | str):
         """
@@ -74,16 +83,16 @@ class AsyncFloroldingServer:
         self.minecraft_port = minecraft_port
 
     @staticmethod
-    async def _c_ping(request_body: bytes, _) -> tuple:
+    async def _c_ping(request_body: bytes, *_) -> tuple:
         return 0, request_body  # 返回相同的请求体
 
     async def _c_protocols(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
         try:
-            if writer not in self.machine_ids:
+            if writer in self.machine_ids:
                 machine_id = self.machine_ids[writer]
                 if machine_id not in self.players:
                     self.client_protocols.update({machine_id: list(request_body.decode("ascii").split("\0"))})
-            return 0, "\0".join(self.supported_protocols).encode("ascii")
+            return 0, "\0".join(self._supported_protocols()).encode("ascii")
         except UnicodeDecodeError:
             return 255, b"Invalid protocol format"
 
@@ -101,7 +110,7 @@ class AsyncFloroldingServer:
             return asyncio.run_coroutine_threadsafe(self.get_client_protocols(), self.loop).result()
         return {}
 
-    async def _c_server_port(self, _) -> tuple:
+    async def _c_server_port(self, *_) -> tuple:
         return 0, struct.pack(">H", self.minecraft_port)
 
     async def _c_player_ping(self, request_body: bytes, writer: asyncio.StreamWriter) -> tuple:
@@ -121,7 +130,7 @@ class AsyncFloroldingServer:
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return 255, f"Invalid JSON format: {e}".encode("utf-8")
 
-    async def _c_player_profiles_list(self, _) -> tuple:
+    async def _c_player_profiles_list(self, *_) -> tuple:
         try:
             # 构建玩家列表
             async with self.lock:
@@ -204,7 +213,8 @@ class AsyncFloroldingServer:
                     writer.write(self._create_response(255, error_msg))
                     await writer.drain()
                     continue
-                self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
+                if protocol_type not in self._not_output_log_protocols:
+                    self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
                 if protocol_type in self.protocol_handlers:
                     status, response_body = await self.protocol_handlers[protocol_type](request_body, writer)
                     response = self._create_response(status, response_body)
@@ -239,7 +249,7 @@ class AsyncFloroldingServer:
         self.loop = asyncio.get_running_loop()
 
         self.log_callback("INFO", f"FloroldingServer 启动在 {self.server_host}:{self.server_port}")
-        self.log_callback("INFO", f"支持的协议: {', '.join(self.supported_protocols)}")
+        self.log_callback("INFO", f"支持的协议: {', '.join(self._supported_protocols())}")
         self.log_callback("INFO", f"Minecraft 端口: {self.minecraft_port}")
 
         try:

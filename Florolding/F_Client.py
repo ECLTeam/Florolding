@@ -176,10 +176,11 @@ class AsyncFloroldingClient:
                 try:
                     await self.send_request("c:player_ping", self.heartbeat_body)
                     # self.log_callback("DEBUG", f"[c:player_ping] 心跳发送成功")
-                    await asyncio.sleep(interval)
                 except Exception as e:
                     self.log_callback("ERROR", f"[c:player_ping] 心跳发送失败: {e}")
+                if not self.writer or self.writer.is_closing():
                     break
+                await asyncio.sleep(interval)
 
         self.heartbeat_task = asyncio.create_task(heartbeat_loop())
         self.log_callback("INFO", f"[c:player_ping] 开始定时心跳, 间隔: {interval}s")
@@ -227,6 +228,7 @@ class AsyncFloroldingClient:
         )
         self.loop = asyncio.get_running_loop()
         self.log_callback("INFO", f"已连接到服务器 {self.server_host}:{self.server_port}")
+
         await self.start_heartbeat()
 
     async def disconnect(self):
