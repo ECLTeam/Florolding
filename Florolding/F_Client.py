@@ -4,6 +4,9 @@ import struct
 import json
 
 
+MAX_PACKET_BODY_BYTES = 1024 * 1024
+
+
 class AsyncFloroldingClient:
     def __init__(
         self,
@@ -55,6 +58,7 @@ class AsyncFloroldingClient:
         self.heartbeat_body = json.dumps(self.player_data).encode("utf-8")
 
         self.heartbeat_task = None
+        self.request_lock = asyncio.Lock()
 
         self.loop = None
 
@@ -213,13 +217,16 @@ class AsyncFloroldingClient:
         """发送请求并接收响应"""
         if not self.writer:
             raise RuntimeError("未连接到服务器")
-        # 创建并发送请求
-        self.writer.write(self._create_request(protocol_type, request_body))
-        await self.writer.drain()
-        # 接收响应
-        response = await self.reader.read(4096)
-        # 正常解析响应
-        return self._parse_response(response)
+        async with self.request_lock:
+            self.writer.write(self._create_request(protocol_type, request_body))
+            await self.writer.drain()
+            header = await self.reader.readexactly(5)
+            status = header[0]
+            body_length = struct.unpack(">I", header[1:5])[0]
+            if body_length > MAX_PACKET_BODY_BYTES:
+                raise ValueError("响应数据过大")
+            response_body = await self.reader.readexactly(body_length)
+            return status, response_body
 
     async def connect(self):
         """连接到基于 Scaffolding 协议的服务器"""

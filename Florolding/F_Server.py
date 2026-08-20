@@ -6,6 +6,9 @@ import struct
 import json
 
 
+MAX_PACKET_BODY_BYTES = 1024 * 1024
+
+
 class AsyncFloroldingServer:
     def __init__(
         self,
@@ -182,6 +185,21 @@ class AsyncFloroldingServer:
             return None, None, 255
 
     @staticmethod
+    async def _read_request(reader: asyncio.StreamReader) -> tuple[str, bytes]:
+        """按 Scaffolding 长度头读取一个完整请求，正确处理 TCP 半包与粘包。"""
+        type_length = (await reader.readexactly(1))[0]
+        if type_length == 0:
+            raise ValueError("Empty protocol type")
+        protocol_bytes = await reader.readexactly(type_length)
+        protocol_type = protocol_bytes.decode("ascii")
+        if not bool(re_match(r"^[a-z0-9_]+:[a-z0-9_]+$", protocol_type)):
+            raise ValueError("Invalid protocol type")
+        body_length = struct.unpack(">I", await reader.readexactly(4))[0]
+        if body_length > MAX_PACKET_BODY_BYTES:
+            raise ValueError("Request body is too large")
+        return protocol_type, await reader.readexactly(body_length)
+
+    @staticmethod
     def _create_response(status: int, response_body: bytes = b"") -> bytes:
         """构建请求体"""
         body_length = len(response_body)
@@ -204,15 +222,7 @@ class AsyncFloroldingServer:
         self.log_callback("INFO", f"新的连接: {address}")
         try:
             while True:
-                data = await reader.read(4096)
-                if not data: break
-                protocol_type, request_body, parse_status = self._parse_request(data)
-                if parse_status != 0:
-                    # 解析错误
-                    error_msg = f"Parse error: {parse_status}".encode("utf-8")
-                    writer.write(self._create_response(255, error_msg))
-                    await writer.drain()
-                    continue
+                protocol_type, request_body = await self._read_request(reader)
                 # if protocol_type not in self._not_output_log_protocols:
                 #     self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
                 if protocol_type in self.protocol_handlers:
@@ -229,6 +239,8 @@ class AsyncFloroldingServer:
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             # 客户端断开连接
             pass
+        except (UnicodeDecodeError, ValueError) as e:
+            self.log_callback("WARNING", f"协议数据无效: {e}")
         except Exception as e:
             self.log_callback("ERROR", f"异常: {e}")
         finally:
