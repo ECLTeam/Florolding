@@ -134,7 +134,7 @@ class AsyncFloroldingServer:
         try:
             # 构建玩家列表
             async with self.lock:
-                self.log_callback("DEBUG", str(self.players))
+                # self.log_callback("DEBUG", str(self.players))
                 return 0, json.dumps(list(self.players.values())).encode("utf-8")
         except Exception as e:
             return 255, f"Error generating player list: {e}".encode("utf-8")
@@ -213,8 +213,8 @@ class AsyncFloroldingServer:
                     writer.write(self._create_response(255, error_msg))
                     await writer.drain()
                     continue
-                if protocol_type not in self._not_output_log_protocols:
-                    self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
+                # if protocol_type not in self._not_output_log_protocols:
+                #     self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
                 if protocol_type in self.protocol_handlers:
                     status, response_body = await self.protocol_handlers[protocol_type](request_body, writer)
                     response = self._create_response(status, response_body)
@@ -223,7 +223,7 @@ class AsyncFloroldingServer:
                     error_msg = f"Unsupported protocol: {protocol_type}".encode("utf-8")
                     response = self._create_response(255, error_msg)
                 # 发送响应
-                self.log_callback("DEBUG", f"响应长度: {len(response)}")
+                # self.log_callback("DEBUG", f"响应长度: {len(response)}")
                 writer.write(response)
                 await writer.drain()
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
