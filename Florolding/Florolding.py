@@ -1,16 +1,17 @@
-from .F_Server import AsyncFloroldingServer
-from .F_Client import AsyncFloroldingClient
-from . import Scaffolding
-import hashlib
-from ipaddress import IPv4Address
-from threading import Thread
-from typing import Callable
-from copy import deepcopy
-import easytier_pyo3
 import asyncio
+import hashlib
 import socket
 import time
+from collections.abc import Callable
+from copy import deepcopy
+from ipaddress import IPv4Address
+from threading import Thread
 
+import easytier_pyo3
+
+from . import Scaffolding
+from .F_Client import AsyncFloroldingClient
+from .F_Server import AsyncFloroldingServer
 
 HOST_READY_TIMEOUT = 15
 
@@ -19,7 +20,7 @@ class Florolding:
     def __init__(
         self,
         launcher_info: str = "EuoraCraft-Launcher",
-        log_callback: Callable[[str, str], None] = lambda l, m: print(f"[{l}] {m}"),
+        log_callback: Callable[[str, str], None] = lambda level, message: print(f"[{level}] {message}"),
     ):
         """
         :param launcher_info: 启动器信息
@@ -50,7 +51,11 @@ class Florolding:
         self.nodes = [{"uri": node} for node in nodes]
 
     def create_room(
-        self, player_name: str, minecraft_port: int = 25565, conn_timeout: int = HOST_READY_TIMEOUT
+        self,
+        player_name: str,
+        minecraft_port: int = 25565,
+        conn_timeout: int = HOST_READY_TIMEOUT,
+        protocol_handlers: dict[str, Callable] | None = None,
     ) -> tuple[str, AsyncFloroldingServer, easytier_pyo3.Node]:
         """
         创建一个房间(注意一定要管理好 EasyTier 节点的生命周期!!!!!)
@@ -94,6 +99,8 @@ class Florolding:
             vendor=self.vendor,
             log_callback=self.log_callback,
         )
+        for protocol, handler in (protocol_handlers or {}).items():
+            server.register_protocol_handler(protocol, handler)
         Thread(target=asyncio.run, args=(server.start(),), daemon=True).start()
 
         return room_code, server, easytier_node
@@ -125,7 +132,11 @@ class Florolding:
             time.sleep(0.25)
 
     def join_room(
-        self, room_code: str, player_name: str, conn_timeout: int = 30
+        self,
+        room_code: str,
+        player_name: str,
+        conn_timeout: int = 30,
+        supported_protocols: list[str] | None = None,
     ) -> tuple[AsyncFloroldingClient, easytier_pyo3.Node]:
         """
         加入一个房间(注意一定要管理好 EasyTier 节点的生命周期!!!!!)
@@ -181,6 +192,8 @@ class Florolding:
             vendor=self.vendor,
             log_callback=self.log_callback,
         )
+        if supported_protocols:
+            client.supported_protocols = list(dict.fromkeys([*client.supported_protocols, *supported_protocols]))
         Thread(target=client.start, daemon=True).start()
         while not client.writer:
             time.sleep(1)
