@@ -1,17 +1,18 @@
-import asyncio
-import hashlib
-import socket
-import time
 from collections.abc import Callable
-from copy import deepcopy
 from ipaddress import IPv4Address
 from threading import Thread
+from hashlib import sha256
+from copy import deepcopy
+import asyncio
+import socket
+import time
 
 import easytier_pyo3
 
 from . import Scaffolding
 from .F_Client import AsyncFloroldingClient
 from .F_Server import AsyncFloroldingServer
+from .Broadcaster import MinecraftLANBroadcaster
 
 HOST_READY_TIMEOUT = 15
 
@@ -62,6 +63,7 @@ class Florolding:
         :param player_name: 玩家昵称
         :param minecraft_port: Minecraft 端口
         :param conn_timeout: 等待房主节点连接公共节点的超时秒数
+        :param protocol_handlers: 注册一些协议
         :return: (房间码, 服务端实例, EasyTierPyo3 Node)
         """
         room_code = Scaffolding.generate_code()
@@ -108,7 +110,7 @@ class Florolding:
     @staticmethod
     def host_virtual_ipv4(room_code: str) -> str:
         """根据房间码稳定生成该大厅独立的私有 IPv4 网段。"""
-        digest = hashlib.sha256(room_code.encode("ascii")).digest()
+        digest = sha256(room_code.encode("ascii")).digest()
         return f"10.{digest[0]}.{digest[1]}.1/24"
 
     @staticmethod
@@ -143,6 +145,7 @@ class Florolding:
         :param room_code: 房间码
         :param player_name: 玩家昵称
         :param conn_timeout: 连接超时时间(单位: 秒)
+        :param supported_protocols: 注册一些协议
         :return: (客户端实例, EasyTierPyo3 Node)
         """
         if not Scaffolding.validate_code(room_code):
@@ -192,7 +195,7 @@ class Florolding:
             vendor=self.vendor,
             log_callback=self.log_callback,
         )
-        if supported_protocols:
+        if type(supported_protocols) == list[str]:
             client.supported_protocols = list(dict.fromkeys([*client.supported_protocols, *supported_protocols]))
         Thread(target=client.start, daemon=True).start()
         while not client.writer:
@@ -234,17 +237,20 @@ class Florolding:
         easytier_node: easytier_pyo3.Node,
         bind_mc_port: int = 25565,
         timeout: int = 30,
-    ) -> bool:
+        broadcast: bool = True,
+    ) -> bool | tuple[bool, MinecraftLANBroadcaster | None]:
         """
         绑定房主在虚拟 IP 上的 Minecraft 端口至本地
         :param client: Florolding Client
         :param easytier_node: EasyTierPyo3 Node
         :param bind_mc_port: 绑定的本地端口
         :param timeout: 超时时间(单位: 秒)
+        :param broadcast: 是否向 UDP 播组广播 Minecraft 多人游戏
+        :return: (bool, MinecraftLANBroadcaster | None)
         """
         mc_port = client.sync_c_server_port()
         if not mc_port:
-            return False
+            return False, None
 
         host_node_info = self.get_host_node_info(easytier_node, timeout)
         host_virtual_ip = IPv4Address(host_node_info["ipv4_addr"]["address"]["addr"]).exploded
@@ -252,7 +258,7 @@ class Florolding:
             {
                 "port_forward": [
                     {
-                        "bind_addr": f"127.0.0.1:{bind_mc_port}",
+                        "bind_addr": f"0.0.0.0:{bind_mc_port}",
                         "dst_addr": f"{host_virtual_ip}:{mc_port}",
                         "proto": "tcp",
                     }
@@ -260,7 +266,17 @@ class Florolding:
             }
         )
 
-        return True
+        if broadcast:
+            broadcaster = MinecraftLANBroadcaster(
+                host="127.0.0.1",
+                port=bind_mc_port,
+                log_callback=self.log_callback,
+            )
+            broadcaster.start()
+
+            return True, broadcaster
+
+        return True, None
 
 
 def find_free_port() -> int:

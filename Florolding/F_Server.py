@@ -1,9 +1,9 @@
-import asyncio
-import json
-import struct
 from collections.abc import Callable
-from copy import deepcopy
 from re import match as re_match
+from copy import deepcopy
+import asyncio
+import struct
+import json
 
 MAX_PACKET_BODY_BYTES = 1024 * 1024
 
@@ -63,8 +63,6 @@ class AsyncFloroldingServer:
 
         # 其他支持的协议列表
         self.other_protocols = ["c:player_easytier_id"]
-
-        self._not_output_log_protocols = ["c:player_ping", "c:player_profiles_list"]
 
         self.loop = None
 
@@ -240,8 +238,7 @@ class AsyncFloroldingServer:
         try:
             while True:
                 protocol_type, request_body = await self._read_request(reader)
-                # if protocol_type not in self._not_output_log_protocols:
-                #     self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
+                # self.log_callback("DEBUG", f"{self.machine_ids.get(writer)} 调用: {protocol_type}")
                 if protocol_type in self.protocol_handlers:
                     status, response_body = await self.protocol_handlers[protocol_type](request_body, writer)
                     response = self._create_response(status, response_body)
