@@ -195,7 +195,7 @@ class Florolding:
             vendor=self.vendor,
             log_callback=self.log_callback,
         )
-        if type(supported_protocols) == list[str]:
+        if supported_protocols:
             client.supported_protocols = list(dict.fromkeys([*client.supported_protocols, *supported_protocols]))
         Thread(target=client.start, daemon=True).start()
         while not client.writer:
