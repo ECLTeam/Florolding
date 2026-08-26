@@ -34,6 +34,9 @@ class Florolding:
             "dhcp": True,
             "tcp_whitelist": ["0"],
             "udp_whitelist": ["0"],
+            "compression": "zstd",
+            "p2p_only": True,
+            "listeners": ["udp://0.0.0.0:0", "tcp://0.0.0.0:0"],
             "flags": {
                 "no_tun": True,
                 "bind_device": False,
@@ -173,6 +176,12 @@ class Florolding:
             easytier_node.stop()
             raise ValueError("联机大厅端口不合规")
 
+        # 等待与房主的 P2P 数据面建立后再继续。若在 P2P 就绪前发送首个 SCF 请求，
+        # 请求会在隧道未建立时丢失，而 p2p_only 房主又拒绝 relay，导致协商永久卡死。
+        host_peer_id = host_node_info.get("peer_id")
+        if host_peer_id is not None:
+            self._wait_for_host_p2p(easytier_node, host_peer_id, conn_timeout)
+
         host_virtual_ip = IPv4Address(host_node_info["ipv4_addr"]["address"]["addr"]).exploded
         bind_server_port = find_free_port()
         easytier_node.apply_config(
@@ -230,6 +239,23 @@ class Florolding:
                 easytier_node.stop()
                 raise TimeoutError("连接超时, 无法找到联机大厅")
         return host_node_info
+
+    @staticmethod
+    def _wait_for_host_p2p(easytier_node: easytier_pyo3.Node, host_peer_id, timeout: int):
+        """
+        等待与房主 peer 建立至少一条 P2P 直连。
+
+        传入的 timeout 是 join_room 的连接超时秒数；P2P 建立通常只需数秒，
+        若在该窗口内始终无法直连（如对称 NAT），则报错让上层决定是否降级。
+        """
+        start_time = time.time()
+        while True:
+            for p in easytier_node.peers():
+                if p.get("peer_id") == host_peer_id and (p.get("directly_connected_conns") or []):
+                    return
+            if time.time() - start_time > timeout:
+                raise TimeoutError("等待与房主的点对点连接超时")
+            time.sleep(0.5)
 
     def bind_mc_port(
         self,
