@@ -201,17 +201,6 @@ class AsyncFloroldingClient:
         request += request_body  # 请求体
         return request
 
-    @staticmethod
-    def _parse_response(data: bytes) -> tuple:
-        """解析 TCP 响应"""
-        if len(data) < 5:
-            raise ValueError("响应数据太短")
-        status = struct.unpack(">B", data[0:1])[0]
-        body_length = struct.unpack(">I", data[1:5])[0]
-        if len(data) < 5 + body_length:
-            raise ValueError("响应体长度不匹配")
-        response_body = data[5:5 + body_length]
-        return status, response_body
 
     async def send_request(self, protocol_type: str, request_body: bytes = b"") -> tuple:
         """发送请求并接收响应"""

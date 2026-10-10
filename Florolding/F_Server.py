@@ -161,32 +161,6 @@ class AsyncFloroldingServer:
             return asyncio.run_coroutine_threadsafe(self.get_player_list(), self.loop).result()
         return []
 
-    @staticmethod
-    def _parse_request(data: bytes) -> tuple:
-        """解析TCP请求"""
-        if len(data) < 5:  # 最小长度检查
-            return None, None, 255
-        try:
-            # 读取请求类型长度 (uint8)
-            type_length = struct.unpack(">B", data[0:1])[0]
-            # 检查数据长度是否足够
-            if len(data) < 1 + type_length + 4:
-                return None, None, 255
-            # 读取请求类型 (ASCII字符串)
-            protocol_type = data[1 : 1 + type_length].decode("ascii")
-            # 验证协议格式
-            if not bool(re_match(r"^[a-z0-9_]+:[a-z0-9_]+$", protocol_type)):
-                return None, None, 255
-            # 读取请求体长度 (uint32)
-            body_length = struct.unpack(">I", data[1 + type_length : 5 + type_length])[0]
-            # 检查请求体长度是否匹配
-            if len(data) < 5 + type_length + body_length:
-                return None, None, 255
-            # 读取请求体
-            request_body = data[5 + type_length : 5 + type_length + body_length]
-            return protocol_type, request_body, 0
-        except (struct.error, UnicodeDecodeError, ValueError):
-            return None, None, 255
 
     @staticmethod
     async def _read_request(reader: asyncio.StreamReader) -> tuple[str, bytes]:
