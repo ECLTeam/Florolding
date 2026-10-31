@@ -17,15 +17,21 @@ from .Broadcaster import MinecraftLANBroadcaster
 HOST_READY_TIMEOUT = 15
 
 
+# 房客先给直连这么多秒，超过就降级到中转；避免对称 NAT 下等满整个连接超时。
+direct_wait_seconds = 10.0
+
+
 class Florolding:
     def __init__(
         self,
         launcher_info: str = "EuoraCraft-Launcher",
         log_callback: Callable[[str, str], None] = lambda level, message: print(f"[{level}] {message}"),
+        p2p_only: bool = False,
     ):
         """
         :param launcher_info: 启动器信息
         :param log_callback: 日志回调, 接受一个这样的函数 (level: str, message: str) -> None
+        :param p2p_only: 房主是否只允许直连；默认允许中转，保证对称 NAT 下的房客仍能加入
         """
         self.vendor = f"{launcher_info} (Florolding 1.0) / EasyTier {easytier_pyo3.version()} for EasyTier-PyO3"
         self.log_callback = log_callback
@@ -35,7 +41,7 @@ class Florolding:
             "tcp_whitelist": ["0"],
             "udp_whitelist": ["0"],
             "compression": "zstd",
-            "p2p_only": True,
+            "p2p_only": p2p_only,
             "listeners": ["udp://0.0.0.0:0", "tcp://0.0.0.0:0"],
             "flags": {
                 "no_tun": True,
@@ -155,32 +161,32 @@ class Florolding:
             raise ValueError("房间码不合规")
 
         machine_id = Scaffolding.machine_id()
-        easytier_config: dict = deepcopy(self.easytier_config)
-        easytier_config.update(
-            {
-                "network_identity": {
-                    "network_name": f"scaffolding-mc-{room_code[2:11]}",
-                    "network_secret": room_code[12:21],
-                },
-                "peer": self.nodes,
-            }
+        deadline = time.time() + conn_timeout
+
+        # 第一轮优先直连：直连质量最好，也不占用中转带宽。
+        easytier_node, host_node_info = self._open_guest_node(room_code, p2p_only=True, deadline=deadline)
+        host_peer_id = host_node_info.get("peer_id")
+        direct_budget = min(direct_wait_seconds, max(0.0, deadline - time.time()))
+        direct_ready = host_peer_id is None or self._wait_for_host_peer(
+            easytier_node, host_peer_id, direct_budget, require_direct=True
         )
 
-        easytier_node = easytier_pyo3.Node(easytier_config)
-        easytier_node.start()
-
-        host_node_info = self.get_host_node_info(easytier_node, conn_timeout)
+        if not direct_ready:
+            # 直连建不起来（常见于对称 NAT）时降级到允许中转，否则这类网络永远进不了房间。
+            self.log_callback("WARN", "与房主的直连未建立，正在降级为中转连接")
+            easytier_node.stop()
+            easytier_node, host_node_info = self._open_guest_node(room_code, p2p_only=False, deadline=deadline)
+            host_peer_id = host_node_info.get("peer_id")
+            if host_peer_id is not None and not self._wait_for_host_peer(
+                easytier_node, host_peer_id, max(0.0, deadline - time.time()), require_direct=False
+            ):
+                easytier_node.stop()
+                raise TimeoutError("等待与房主的连接超时：直连与中转均不可用")
 
         server_port = host_node_info["hostname"].replace("scaffolding-mc-server-", "")
         if not server_port.isnumeric() or not (0 < int(server_port) <= 65535):
             easytier_node.stop()
             raise ValueError("联机大厅端口不合规")
-
-        # 等待与房主的 P2P 数据面建立后再继续。若在 P2P 就绪前发送首个 SCF 请求，
-        # 请求会在隧道未建立时丢失，而 p2p_only 房主又拒绝 relay，导致协商永久卡死。
-        host_peer_id = host_node_info.get("peer_id")
-        if host_peer_id is not None:
-            self._wait_for_host_p2p(easytier_node, host_peer_id, conn_timeout)
 
         host_virtual_ip = IPv4Address(host_node_info["ipv4_addr"]["address"]["addr"]).exploded
         bind_server_port = find_free_port()
@@ -240,21 +246,58 @@ class Florolding:
                 raise TimeoutError("连接超时, 无法找到联机大厅")
         return host_node_info
 
-    @staticmethod
-    def _wait_for_host_p2p(easytier_node: easytier_pyo3.Node, host_peer_id, timeout: int):
+    def _open_guest_node(self, room_code: str, *, p2p_only: bool, deadline: float):
         """
-        等待与房主 peer 建立至少一条 P2P 直连。
+        以指定直连策略创建房客节点并读取房主信息。
 
-        传入的 timeout 是 join_room 的连接超时秒数；P2P 建立通常只需数秒，
-        若在该窗口内始终无法直连（如对称 NAT），则报错让上层决定是否降级。
+        :param room_code: 房间码
+        :param p2p_only: 本轮是否只允许直连
+        :param deadline: 整次加入的截止时间戳
+        :return: (节点, 房主节点信息)
+        :raises TimeoutError: 在截止前找不到联机大厅时抛出
+        """
+        easytier_config: dict = deepcopy(self.easytier_config)
+        easytier_config["p2p_only"] = p2p_only
+        easytier_config.update(
+            {
+                "network_identity": {
+                    "network_name": f"scaffolding-mc-{room_code[2:11]}",
+                    "network_secret": room_code[12:21],
+                },
+                "peer": self.nodes,
+            }
+        )
+        easytier_node = easytier_pyo3.Node(easytier_config)
+        easytier_node.start()
+        remaining = max(1, int(deadline - time.time()))
+        return easytier_node, self.get_host_node_info(easytier_node, remaining)
+
+    @staticmethod
+    def _wait_for_host_peer(
+        easytier_node: easytier_pyo3.Node, host_peer_id, timeout: float, *, require_direct: bool
+    ) -> bool:
+        """
+        等待房主 peer 可被本机连通。
+
+        首个 SCF 请求必须在隧道真正可用之后发送，否则请求会丢在未建立的通道里；
+        ``require_direct`` 为真时只接受直连，为假时直连或中转都算连通。
+
+        :param easytier_node: 房客节点
+        :param host_peer_id: 房主 peer 标识
+        :param timeout: 本轮等待上限（秒）
+        :param require_direct: 是否必须为直连
+        :return: 是否在超时前连通
         """
         start_time = time.time()
         while True:
-            for p in easytier_node.peers():
-                if p.get("peer_id") == host_peer_id and (p.get("directly_connected_conns") or []):
-                    return
+            for peer in easytier_node.peers():
+                if peer.get("peer_id") != host_peer_id:
+                    continue
+                if require_direct and not (peer.get("directly_connected_conns") or []):
+                    continue
+                return True
             if time.time() - start_time > timeout:
-                raise TimeoutError("等待与房主的点对点连接超时")
+                return False
             time.sleep(0.5)
 
     def bind_mc_port(
