@@ -20,6 +20,11 @@ HOST_READY_TIMEOUT = 15
 # 房客先给直连这么多秒，超过就降级到中转；避免对称 NAT 下等满整个连接超时。
 direct_wait_seconds = 10.0
 
+# Scaffolding 房主节点名的标准前缀与默认服务端口；其他启动器命名不完全一致时用默认端口兜底。
+host_prefix = "scaffolding-mc-server-"
+host_prefix_loose = "scaffolding-mc"
+default_scf_port = 3939
+
 
 class Florolding:
     def __init__(
@@ -183,8 +188,8 @@ class Florolding:
                 easytier_node.stop()
                 raise TimeoutError("等待与房主的连接超时：直连与中转均不可用")
 
-        server_port = host_node_info["hostname"].replace("scaffolding-mc-server-", "")
-        if not server_port.isnumeric() or not (0 < int(server_port) <= 65535):
+        server_port = self._host_server_port(str(host_node_info.get("hostname", "")))
+        if server_port is None:
             easytier_node.stop()
             raise ValueError("联机大厅端口不合规")
 
@@ -222,7 +227,21 @@ class Florolding:
         return client, easytier_node
 
     @staticmethod
-    def get_host_node_info(easytier_node: easytier_pyo3.Node, conn_timeout: int = 30):
+    def _host_server_port(hostname: str) -> int | None:
+        """
+        从房主节点名解析 Scaffolding 服务端口。
+
+        标准命名以端口结尾；非标准命名时回退默认端口，避免直接判定失败。
+
+        :param hostname: 房主节点名
+        :return: 服务端口，无法确定时为空
+        """
+        suffix = hostname.rsplit("-", 1)[-1]
+        if suffix.isdigit() and 0 < int(suffix) <= 65535:
+            return int(suffix)
+        return default_scf_port
+
+    def get_host_node_info(self, easytier_node: easytier_pyo3.Node, conn_timeout: int = 30):
         """
         获取房主的 EasyTier 节点信息
         :param easytier_node: EasyTierPyo3 Node
@@ -230,20 +249,33 @@ class Florolding:
         :return: EasyTier 节点信息
         """
         host_node_info = {}
+        fallback_info = {}
+        seen: list[str] = []
         start_time = time.time()
         while True:
             for node_info in easytier_node.routes():
-                if node_info["hostname"].lower().startswith("scaffolding-mc-server-") and (
-                    node_info.get("ipv4_addr", {}).get("address", {}).get("addr")
-                ):
+                hostname = str(node_info.get("hostname", ""))
+                if not node_info.get("ipv4_addr", {}).get("address", {}).get("addr"):
+                    continue
+                seen.append(hostname)
+                if hostname.lower().startswith(host_prefix):
                     host_node_info = node_info
                     break
+                # 其他启动器可能不按标准前缀命名，先记下来，找不到标准节点时再兜底。
+                if not fallback_info and hostname.lower().startswith(host_prefix_loose):
+                    fallback_info = node_info
             if host_node_info:
                 break
             time.sleep(1)
             if time.time() - start_time > conn_timeout:
+                if fallback_info:
+                    self.log_callback(
+                        "WARN",
+                        f"未找到标准命名的房主节点，改用 {fallback_info.get('hostname')}",
+                    )
+                    return fallback_info
                 easytier_node.stop()
-                raise TimeoutError("连接超时, 无法找到联机大厅")
+                raise TimeoutError(f"连接超时, 无法找到联机大厅（可见节点：{len(set(seen))} 个）")
         return host_node_info
 
     def _open_guest_node(self, room_code: str, *, p2p_only: bool, deadline: float):
@@ -323,9 +355,18 @@ class Florolding:
 
         host_node_info = self.get_host_node_info(easytier_node, timeout)
         host_virtual_ip = IPv4Address(host_node_info["ipv4_addr"]["address"]["addr"]).exploded
+        server_port = host_node_info["hostname"].removeprefix("scaffolding-mc-server-")
+        if not server_port.isnumeric() or not (0 < int(server_port) <= 65535):
+            raise ValueError("联机大厅端口不合规")
+        # apply_config 替换整个转发列表；保留已连接的控制通道，避免扩展与心跳被断开。
         easytier_node.apply_config(
             {
                 "port_forward": [
+                    {
+                        "bind_addr": f"127.0.0.1:{client.server_port}",
+                        "dst_addr": f"{host_virtual_ip}:{server_port}",
+                        "proto": "tcp",
+                    },
                     {
                         "bind_addr": f"0.0.0.0:{bind_mc_port}",
                         "dst_addr": f"{host_virtual_ip}:{mc_port}",
