@@ -37,6 +37,8 @@ class AsyncFloroldingClient:
         self.log_callback = log_callback
         self.reader = None
         self.writer = None
+        # 协商后的可用协议；None 表示尚未协商（协商本身只能用核心协议）。
+        self.negotiated_protocols: set[str] | None = None
 
         self.player_data = {
             "name": self.player_name,
@@ -95,8 +97,10 @@ class AsyncFloroldingClient:
         self.log_callback("DEBUG", f"[c:protocols] 客户端协议: {self.supported_protocols}")
         if status == 0:
             server_protocols = response_body.decode("ascii").split("\0")
+            common = set(self.supported_protocols) & set(server_protocols)
+            self.negotiated_protocols = common
             self.log_callback("DEBUG", f"[c:protocols] 服务器协议: {server_protocols}")
-            self.log_callback("DEBUG", f"[c:protocols] 共同协议: {set(self.supported_protocols) & set(server_protocols)}")
+            self.log_callback("DEBUG", f"[c:protocols] 共同协议: {common}")
             self.log_callback("INFO", "[c:protocols] 协议协商成功")
             return server_protocols
         else:
@@ -206,6 +210,10 @@ class AsyncFloroldingClient:
         """发送请求并接收响应"""
         if not self.writer:
             raise RuntimeError("未连接到服务器")
+        if self.negotiated_protocols is not None and protocol_type not in self.negotiated_protocols:
+            # 房主没有声明该协议时不能盲发：对方可能直接断开连接，
+            # 让上层按「该扩展本次不可用」处理即可。
+            raise RuntimeError(f"房主未声明该协议: {protocol_type}")
         async with self.request_lock:
             self.writer.write(self._create_request(protocol_type, request_body))
             await self.writer.drain()
