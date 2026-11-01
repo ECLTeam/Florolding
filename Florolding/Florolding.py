@@ -31,12 +31,12 @@ class Florolding:
         self,
         launcher_info: str = "EuoraCraft-Launcher",
         log_callback: Callable[[str, str], None] = lambda level, message: print(f"[{level}] {message}"),
-        p2p_only: bool = False,
+        p2p_only: bool = True,
     ):
         """
         :param launcher_info: 启动器信息
         :param log_callback: 日志回调, 接受一个这样的函数 (level: str, message: str) -> None
-        :param p2p_only: 房主是否只允许直连；默认允许中转，保证对称 NAT 下的房客仍能加入
+        :param p2p_only: 房主是否只允许直连；默认开启，直连质量最好，无法直连的房客会被拒绝
         """
         self.vendor = f"{launcher_info} (Florolding 1.0) / EasyTier {easytier_pyo3.version()} for EasyTier-PyO3"
         self.log_callback = log_callback
